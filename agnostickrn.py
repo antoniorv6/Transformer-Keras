@@ -10,6 +10,8 @@ from Transformer.TransformerDecoder import TransformerDecoder
 from Transformer.Transformer_Loss_Optimizer import Get_Custom_Adam_Optimizer, Transformer_Loss_AIAYN
 import numpy as np
 
+import tqdm
+
 import sys
 
 tf.enable_eager_execution()
@@ -17,6 +19,8 @@ conf = tf.ConfigProto()
 conf.gpu_options.allow_growth= True
 sess = tf.Session(config=conf)
 tf.keras.backend.set_session(sess)
+
+BATCH_SIZE = 64
 
 def Get_Transformer_Model(transformer_encoder_layers, transformer_decoder_layers, model_depth, ff_depth, num_heads, SOURCE_SIZE, TARGET_SIZE,
                           POS_ENC_INPUT, POS_ENC_TARGET,
@@ -50,7 +54,7 @@ def Get_Transformer_Model(transformer_encoder_layers, transformer_decoder_layers
     transformer_optimizer = Get_Custom_Adam_Optimizer(model_depth)
 
     model = Model([input_encoder, input_decoder, encoder_padding_mask, look_ahead_mask, decoder_padding_mask], output)
-    model.compile(optimizer= transformer_optimizer, loss= 'categorical_crossentropy')
+    model.compile(optimizer= transformer_optimizer, loss= Transformer_Loss_AIAYN)
     model.summary()
     return model
 
@@ -139,7 +143,7 @@ def make_vocabulary(YSequences, pathToSave, nameOfVoc):
 def batch_confection(batchX, batchY, max_len_input, max_len_target, targetLength, w2iagnostic, w2ikern):
     encoder_input = np.full((len(batchX), max_len_input), w2iagnostic['<pad>'], dtype=np.float)
     decoder_input = np.full((len(batchY), max_len_target), w2iskm['<pad>'], dtype=np.float)
-    decoder_output = np.zeros((len(batchY), max_len_target, targetLength), dtype=np.float)
+    decoder_output = np.zeros((len(batchY), max_len_target), dtype=np.float)
 
     for i, sequence in enumerate(batchX):
         for j, char in enumerate(sequence):
@@ -151,7 +155,7 @@ def batch_confection(batchX, batchY, max_len_input, max_len_target, targetLength
             decoder_input[i][j] = w2ikern[char]
 
             if j > 0:
-                decoder_output[i][j - 1][w2ikern[char]] = 1.
+                decoder_output[i][j - 1] = w2ikern[char]
 
     return encoder_input, decoder_input, decoder_output
 
@@ -191,49 +195,51 @@ def edit_distance(a, b):
 
     return current[n]
 
-def validateModel(model, testGen, i2wskm):
+def validateModel(model, testGen, i2wskm, numOfBatches):
     current_edition_val = 0
-    inputs, ground_truth = next(testGen)
-    predictions = model.predict(inputs, batch_size=200)
-    for i, prediction in enumerate(predictions):
-        raw_sequence = [i2wskm[char] for char in np.argmax(prediction, axis=1)]
-        raw_trueseq = [i2wskm[char] for char in np.argmax(ground_truth[i], axis=1)]
-        predictionSequence = []
-        truesequence = []
+    predictionSequence = []
+    truesequence = []
+    for _ in range(numOfBatches):
+        inputs, ground_truth = next(testGen)
+        predictions = model.predict(inputs, batch_size=BATCH_SIZE)
+        for i, prediction in enumerate(predictions):
+            raw_sequence = [i2wskm[char] for char in np.argmax(prediction, axis=1)]
+            raw_trueseq = [i2wskm[char] for char in ground_truth[i]]
+            predictionSequence = []
+            truesequence = []
 
-        for char in raw_sequence:
-            predictionSequence += [char]
-            if char == '<eos>':
-                break
-        for char in raw_trueseq:
-            truesequence += [char]
-            if char == '<eos>':
-                break
+            for char in raw_sequence:
+                predictionSequence += [char]
+                if char == '<eos>':
+                    break
+            for char in raw_trueseq:
+                truesequence += [char]
+                if char == '<eos>':
+                    break
 
-        if i == 0:
-            print("Prediction: " + str(predictionSequence))
-            print("True: " + str(truesequence))
+            current_edition_val += edit_distance(truesequence, predictionSequence) / len(truesequence)
 
-        current_edition_val += edit_distance(truesequence, predictionSequence) / len(truesequence)
+    print("Prediction: " + str(predictionSequence))
+    print("True: " + str(truesequence))
 
     return current_edition_val
 
 if __name__ == '__main__':
     X = LoadData("",
-                 "Dataset/dataset.lst", 1, 10200)
+                 "Dataset/dataset.lst", 1, 70000)
     Y = LoadData("",
-                 "Dataset/dataset.lst", 3, 10200)
+                 "Dataset/dataset.lst", 3, 70000)
 
     X = [['<sos>'] + sequence + ['<eos>'] for sequence in X]
     Y = [['<sos>'] + sequence + ['<eos>'] for sequence in Y]
     maxLengthInput = len(X[np.argmax([len(element) for element in X])])
     maxLengthTarget = len(Y[np.argmax([len(element) for element in Y])])
 
-    XTest = X[10000:]
-    YTest = Y[10000:]
+    XTest = X[45000:]
+    YTest = Y[45000:]
 
-    X = X[:10000]
-    Y = Y[:10000]
+    X = X[:45000]
+    Y = Y[:45000]
 
     print(X[0])
     print(Y[0])
@@ -241,12 +247,12 @@ if __name__ == '__main__':
     w2iagnostic, i2wagnostic = make_vocabulary([X, XTest], "vocabulary", "agnostic")
     w2iskm, i2wskm = make_vocabulary([Y, YTest], "vocabulary", "skm")
 
-    batch_gen = batch_generator(X, Y, 8, len(w2iagnostic), maxLengthInput, maxLengthTarget, len(w2iskm), w2iagnostic, w2iskm)
+    batch_gen = batch_generator(X, Y, BATCH_SIZE, len(w2iagnostic), maxLengthInput, maxLengthTarget, len(w2iskm), w2iagnostic, w2iskm)
 
-    model  = Get_Transformer_Model(transformer_encoder_layers=6,
-                                   transformer_decoder_layers=6,
-                                   model_depth=512,
-                                   ff_depth=2048,
+    model  = Get_Transformer_Model(transformer_encoder_layers=4,
+                                   transformer_decoder_layers=4,
+                                   model_depth=128,
+                                   ff_depth=512,
                                    num_heads=8,
                                    SOURCE_SIZE=len(w2iagnostic),
                                    TARGET_SIZE=len(w2iskm),
@@ -255,12 +261,12 @@ if __name__ == '__main__':
                                    MAX_SEQ_LEN_INPUT=maxLengthInput,
                                    MAX_SEQ_LEN_TARGET=maxLengthTarget)
 
-    for SUPER_EPOCH in range(20):
-        model.fit_generator(batch_gen, steps_per_epoch=len(X)//8, epochs=1)
-        test_generator = batch_generator(XTest, YTest, 200, len(w2iagnostic), maxLengthInput, maxLengthTarget, len(w2iskm), w2iagnostic, w2iskm)
-        edition_val = validateModel(model, test_generator, i2wskm)
+    for SUPER_EPOCH in range(30):
+        model.fit_generator(batch_gen, steps_per_epoch=len(X)//BATCH_SIZE, epochs=5, verbose=2)
+        test_generator = batch_generator(XTest, YTest, BATCH_SIZE, len(w2iagnostic), maxLengthInput, maxLengthTarget, len(w2iskm), w2iagnostic, w2iskm)
+        edition_val = validateModel(model, test_generator, i2wskm, numOfBatches= len(XTest)//BATCH_SIZE)
         SER = (100. * edition_val) / len(XTest)
-        print(f'| Epoch {(SUPER_EPOCH + 1) * 5} | SER in validation with cheating: {SER}')
+        print(f'| Epoch {(SUPER_EPOCH + 1)} | SER in validation with cheating: {SER}')
 
 
 

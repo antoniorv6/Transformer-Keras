@@ -2,7 +2,7 @@ import tensorflow as tf
 from tensorflow.keras.optimizers.schedules import LearningRateSchedule
 from tensorflow.keras.optimizers import Adam
 
-loss_object = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
+loss_object = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False, reduction='none')
 
 class TransformerLearningRate(LearningRateSchedule):
     def __init__(self, model_depth, warmup_steps=4000):
