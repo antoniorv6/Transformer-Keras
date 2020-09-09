@@ -1,18 +1,7 @@
 import tensorflow as tf
-
-from tensorflow.keras.layers import Input, Dense
-from tensorflow.keras.models import Model
-from tensorflow.keras.optimizers import Adam
-
-from Transformer.TransformerEncoder import TransformerEncoder
-from Transformer.TransformerDecoder import TransformerDecoder
-
-from Transformer.Transformer_Loss_Optimizer import Get_Custom_Adam_Optimizer, Transformer_Loss_AIAYN
+from Transformer.TransformerCore import Get_Transformer_Model
 import numpy as np
-
 import tqdm
-
-import sys
 
 tf.enable_eager_execution()
 conf = tf.ConfigProto()
@@ -21,42 +10,6 @@ sess = tf.Session(config=conf)
 tf.keras.backend.set_session(sess)
 
 BATCH_SIZE = 64
-
-def Get_Transformer_Model(transformer_encoder_layers, transformer_decoder_layers, model_depth, ff_depth, num_heads, SOURCE_SIZE, TARGET_SIZE,
-                          POS_ENC_INPUT, POS_ENC_TARGET,
-                          MAX_SEQ_LEN_INPUT, MAX_SEQ_LEN_TARGET):
-    input_encoder = Input(shape=(None,))
-    input_decoder = Input(shape=(None,))
-
-    encoder_padding_mask = Input(shape=(None, 1, MAX_SEQ_LEN_INPUT))
-    decoder_padding_mask = Input(shape=(None, 1, MAX_SEQ_LEN_INPUT))
-    look_ahead_mask = Input(shape=(None, MAX_SEQ_LEN_TARGET, MAX_SEQ_LEN_TARGET))
-
-    transformer_encoder = TransformerEncoder(num_layers=transformer_encoder_layers,
-                                             model_depth= model_depth,
-                                             num_heads= num_heads,
-                                             feed_forward_depth= ff_depth,
-                                             input_vocab_size= SOURCE_SIZE,
-                                             maximum_pos_encoding= POS_ENC_INPUT
-                                             )(input_encoder, mask=encoder_padding_mask)
-    transformer_decoder, attn = TransformerDecoder(num_layers= transformer_decoder_layers,
-                                             model_depth= model_depth,
-                                             num_heads = num_heads,
-                                             feed_forward_depth= ff_depth,
-                                             target_vocab_size= TARGET_SIZE,
-                                             maximum_position_encoding= POS_ENC_TARGET)(input_decoder,
-                                                                                     encoder_output=transformer_encoder,
-                                                                                     look_ahead_mask = look_ahead_mask,
-                                                                                     padding_mask = decoder_padding_mask)
-
-    output = Dense(TARGET_SIZE, activation='softmax')(transformer_decoder)
-
-    transformer_optimizer = Get_Custom_Adam_Optimizer(model_depth)
-
-    model = Model([input_encoder, input_decoder, encoder_padding_mask, look_ahead_mask, decoder_padding_mask], output)
-    model.compile(optimizer= transformer_optimizer, loss= Transformer_Loss_AIAYN)
-    model.summary()
-    return model
 
 def create_padding_mask(seq, paddingValue):
     seq = tf.cast(tf.math.equal(seq, paddingValue), tf.float32)
@@ -224,11 +177,52 @@ def validateModel(model, testGen, i2wskm, numOfBatches):
 
     return current_edition_val
 
+
+def test_model(model, testGen, w2iagnostic, w2iskm, i2wskm, numOfBatches, max_inp_length, max_tar_len, target_len):
+    current_edition_val = 0
+    prediction = []
+    gt = []
+    for _ in range(numOfBatches):
+        inputs, ground_truth = next(testGen)
+        inputs = inputs[0]
+        for i, inp in enumerate(inputs):
+            prediction, gt = test_sequence(inp, ground_truth[i], w2iagnostic, w2iskm, i2wskm, model, max_tar_len)
+            current_edition_val+=edit_distance(gt, prediction)
+
+    print("Prediction: " + str(prediction))
+    print("True: " + str(gt))
+
+    return current_edition_val
+
+
+def test_sequence(sequence, trueSequence, w2iagnostic, w2iskm, i2wskm, model, max_tar_len):
+    decoded = np.full((1, max_tar_len), w2iskm['<pad>'], dtype=np.float)
+    decoded[0][0] = w2iskm['<sos>']
+    predicted = []
+    true = []
+    for character in trueSequence:
+        if character == '<eos>':
+            break
+        true += [i2wskm[character]]
+
+    for i in range(1, max_tar_len-1):
+        input_padding_mask, combined_mask, target_padding_mask = create_masks([sequence], decoded,
+                                                                              w2iagnostic['<pad>'], w2iskm['<pad>'])
+        prediction = model.predict(x=[[sequence], decoded, input_padding_mask, combined_mask, target_padding_mask], steps=1, verbose=0)
+        decoded[0][i] = np.argmax(prediction[0][i])
+
+        if i2wskm[decoded[0][i]] == '<eos>':
+            break
+
+        predicted.append(i2wskm[decoded[0][i]])
+
+    return predicted, true
+
 if __name__ == '__main__':
     X = LoadData("",
-                 "Dataset/dataset.lst", 1, 70000)
+                 "Dataset/dataset.lst", 1, 75000)
     Y = LoadData("",
-                 "Dataset/dataset.lst", 3, 70000)
+                 "Dataset/dataset.lst", 3, 75000)
 
     X = [['<sos>'] + sequence + ['<eos>'] for sequence in X]
     Y = [['<sos>'] + sequence + ['<eos>'] for sequence in Y]
@@ -240,6 +234,10 @@ if __name__ == '__main__':
 
     X = X[:45000]
     Y = Y[:45000]
+
+    XValidation = XTest[:1000]
+    YValidation = YTest[:1000]
+
 
     print(X[0])
     print(Y[0])
@@ -261,12 +259,19 @@ if __name__ == '__main__':
                                    MAX_SEQ_LEN_INPUT=maxLengthInput,
                                    MAX_SEQ_LEN_TARGET=maxLengthTarget)
 
-    for SUPER_EPOCH in range(30):
+    for SUPER_EPOCH in range(3):
         model.fit_generator(batch_gen, steps_per_epoch=len(X)//BATCH_SIZE, epochs=5, verbose=2)
-        test_generator = batch_generator(XTest, YTest, BATCH_SIZE, len(w2iagnostic), maxLengthInput, maxLengthTarget, len(w2iskm), w2iagnostic, w2iskm)
-        edition_val = validateModel(model, test_generator, i2wskm, numOfBatches= len(XTest)//BATCH_SIZE)
-        SER = (100. * edition_val) / len(XTest)
-        print(f'| Epoch {(SUPER_EPOCH + 1)} | SER in validation with cheating: {SER}')
+        val_generator = batch_generator(XTest, YTest, BATCH_SIZE, len(w2iagnostic), maxLengthInput, maxLengthTarget, len(w2iskm), w2iagnostic, w2iskm)
+        test_generator = batch_generator(XValidation, YValidation, BATCH_SIZE, len(w2iagnostic), maxLengthInput, maxLengthTarget, len(w2iskm), w2iagnostic, w2iskm)
+        edition_val = validateModel(model, val_generator, i2wskm, numOfBatches= len(XTest)//BATCH_SIZE)
+        SERDECINP = (100. * edition_val) / len(XTest)
+        edition_val_nodecinp = test_model(model=model, testGen=test_generator, w2iagnostic=w2iagnostic, w2iskm=w2iskm,
+                                          i2wskm=i2wskm, numOfBatches=len(XValidation) // BATCH_SIZE,
+                                          max_inp_length=maxLengthInput, max_tar_len=maxLengthTarget,
+                                          target_len=len(w2iskm))
+
+        SER = (100. * edition_val_nodecinp) / len(XTest)
+        print(f'| Epoch {(SUPER_EPOCH + 1)} | Validation SER with input: {SERDECINP} | Real SER: {SER}')
 
 
 

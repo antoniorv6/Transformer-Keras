@@ -7,7 +7,7 @@ from Transformer.TransformerDecoder import TransformerDecoder
 from tensorflow.keras.layers import Input, Dense
 from tensorflow.keras.models import Model
 
-from Transformer.Transformer_Loss_Optimizer import Get_Custom_Adam_Optimizer
+from Transformer.TransformerCore import Get_Custom_Adam_Optimizer
 
 import numpy as np
 

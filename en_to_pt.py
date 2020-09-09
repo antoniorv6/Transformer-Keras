@@ -8,7 +8,7 @@ from tensorflow.keras.optimizers import Adam
 from Transformer.TransformerEncoder import TransformerEncoder
 from Transformer.TransformerDecoder import TransformerDecoder
 
-from Transformer.Transformer_Loss_Optimizer import Get_Custom_Adam_Optimizer, Transformer_Loss_AIAYN
+from Transformer.TransformerCore import Get_Custom_Adam_Optimizer, Transformer_Loss_AIAYN
 
 BUFFER_SIZE = 20000
 BATCH_SIZE = 64
@@ -61,11 +61,13 @@ def create_padding_mask(seq, paddingValue):
     returnedseq = seq[:, tf.newaxis, tf.newaxis, :]
     # add extra dimensions to add the padding
     # to the attention logits.
-    return returnedseq # (batch_size, 1, 1, seq_len)
+    return returnedseq  # (batch_size, 1, 1, seq_len)
+
 
 def create_look_ahead_mask(size):
-  mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
-  return mask  # (seq_len, seq_len)
+    mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
+    return mask  # (seq_len, seq_len)
+
 
 def create_masks(inp, tar, paddingvalueinp, paddingvaluetar):
     # Encoder padding mask
@@ -150,6 +152,3 @@ if __name__ == '__main__':
             batchnum += 1
 
         print(f'| Epoch {EPOCH} | Loss: {str(loss/batchnum)} | Batches: {batchnum}')
-
-
-
